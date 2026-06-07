@@ -9,8 +9,8 @@ backwards compatibility with older Python versions or legacy APIs.
 
 ## Core Principles
 
-- Model definitions must be type-safe. Declaring a model field should preserve
-  the Python type of that field for static checkers and downstream query code.
+- Table definitions must be type-safe. Declaring a table column should preserve
+  the Python type of that column for static checkers and downstream query code.
 - Queries must be type-safe. Query builders should preserve result row types
   through selection, filtering, ordering, projection, and execution.
 - Prefer APIs that static type checkers can understand naturally. Runtime
@@ -26,13 +26,13 @@ backwards compatibility with older Python versions or legacy APIs.
 
 ## Design Direction
 
-Favor explicit model, expression, projection, and query types over magic
+Favor explicit table, expression, projection, and query types over magic
 dynamic behavior. A user should be able to read a query and predict both the SQL
 shape and the Python result type.
 
 When adding features, ask whether the API keeps these properties:
 
-- Field access carries the declared field type.
+- Column access carries the declared column type.
 - Comparisons and SQL expressions produce typed expression objects.
 - Select queries preserve the projected row type.
 - Result hydration matches the statically declared projection.

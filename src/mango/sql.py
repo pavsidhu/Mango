@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import field as dataclass_field
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -34,7 +33,7 @@ class ColumnChunk:
 @dataclass(frozen=True, slots=True)
 class SQL[T]:
     chunks: tuple[object, ...] = ()
-    used_tables: frozenset[TableRef] = dataclass_field(init=False)
+    used_tables: frozenset[TableRef] = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "used_tables", collect_used_tables(self.chunks))
@@ -46,20 +45,9 @@ class CompiledSql:
     params: tuple[Any, ...]
 
 
-def raw(text: str) -> RawChunk:
-    return RawChunk(text)
-
-
-def param(value: object) -> ParamChunk:
-    return ParamChunk(value)
-
-
-def column_sql(table_ref: TableRef, name: str) -> SQL[Any]:
-    return SQL((ColumnChunk(ColumnRef(table_ref, name)),))
-
-
 def collect_used_tables(chunks: tuple[object, ...]) -> frozenset[TableRef]:
     tables: set[TableRef] = set()
+
     for chunk in chunks:
         match chunk:
             case ColumnChunk(column=ColumnRef(table=table_ref)) if table_ref.name:
@@ -68,4 +56,5 @@ def collect_used_tables(chunks: tuple[object, ...]) -> frozenset[TableRef]:
                 tables.update(used_tables)
             case _:
                 pass
+
     return frozenset(tables)

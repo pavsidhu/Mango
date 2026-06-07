@@ -1,17 +1,18 @@
 from typing import reveal_type
 
-from mango import Model, Row, column, field, select
+from mango import Table, Row, expr, select
+from mango.pg import integer, uuid, varchar
 
 
-class User(Model):
-    id = field(int, primary_key=True)
-    name = field(str)
-    age = field(int)
+class User(Table):
+    id = uuid(primary_key=True)
+    name = varchar()
+    age = integer()
 
 
 class UserRowResult(Row):
-    name = column(User.name)
-    age = column(User.age)
+    name = expr(User.name)
+    age = expr(User.age)
 
 
 row_query = select(UserRowResult)

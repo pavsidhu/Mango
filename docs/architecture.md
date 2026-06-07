@@ -1,93 +1,156 @@
 # Architecture
 
-This MVP is split into five small layers. The core internal representation is
-typed SQL chunks, not a SQL AST and not raw SQL strings.
+Mango is a small type-safe PostgreSQL ORM. Its internal representation is typed
+SQL chunks plus immutable query configuration.
+
+The package is currently organized around these layers:
+
+- schema descriptors and table metadata
+- composable typed SQL chunks
+- typed expressions and SQL helper functions
+- `Row`-based result projections and hydration
+- immutable `Select[T]` query configuration
+- PostgreSQL compilation and async psycopg execution
 
 ## Schema Metadata
 
-`Model` uses `ModelMeta` to bind `Field[T]` descriptors to table metadata. The
-public `field(int)` helper returns `Field[int]`, so Pyright can infer model
-column types directly from class bodies.
+`Table` uses `TableMeta` to bind `Column[T]` descriptors to table metadata.
+Postgres-specific type helpers such as `integer()`, `varchar()`, and `uuid()`
+live in `mango.pg.columns` and return typed columns, so Pyright can infer table
+column types directly from class bodies without a separate Python type argument.
+Import them from `mango.pg` (or `mango.pg.columns`).
 
-Each table has a `TableRef`, and each bound field stores an `SQL[T]` fragment
-containing a `ColumnRef`. The reference survives query construction unchanged
-until a dialect compiler renders it.
+Each table class receives `__mango_table__` and `__mango_columns__`. Table names
+default to a simple snake_case version of the class name and can be overridden
+with `__tablename__`. Each `TableMetadata` owns a `TableRef`, and each bound
+column stores an `SQL[T]` fragment containing a structured `ColumnRef`.
+
+Column instances serve two roles:
+
+- on the class, `User.age` is a `Column[int]` and can be used in queries
+- on an instance, `user.age` is an `int` stored in the row instance dict
 
 ## Typed SQL Chunks
 
 `SQL[T]` is Mango's central composable SQL fragment. It contains ordered chunks:
 
-- trusted raw SQL text for Mango-owned syntax such as operators and parentheses
+- raw SQL text for trusted syntax such as operators, parentheses, and function
+  names
 - column references
 - bound parameters
 - nested `SQL[T]` fragments
+- nested `Select[T]` queries for forms such as `EXISTS (...)`
 
-`SQL[T]` also computes `used_tables`, similar to Drizzle's `usedTables`. Mango
-uses that small amount of metadata to infer a single `FROM` table for now.
+`SQL[T]` computes `used_tables`, similar to Drizzle's `usedTables`. Mango uses
+that metadata to infer `FROM` sources when a query has no explicit `.from_(...)`.
+Explicit `FROM` and join configuration lives on `Select[T]`.
 
-Mango uses chunks instead of a full tree because expressions are mostly written
-in SQL order already. A binary comparison such as `User.age > 18` becomes a
-typed sequence of chunks: open parenthesis, the column fragment, a trusted
-operator chunk, a parameter chunk, and a close parenthesis. This keeps the SQL
-shape easy to inspect without requiring a second expression tree.
+Mango uses chunks instead of a full expression tree because expressions are
+mostly written in SQL order already. A binary comparison such as `User.age > 18`
+becomes a typed sequence of chunks: open parenthesis, the column fragment, a
+trusted operator chunk, a parameter chunk, and a close parenthesis. This keeps
+the SQL shape easy to inspect without requiring a second render tree.
 
-Mango also avoids raw strings as the expression representation. User values are
-stored as parameter chunks, and table/column identifiers remain structured
-references until the dialect compiler turns those chunks into final SQL text
-and placeholder syntax.
+User values are stored as parameter chunks, and table/column identifiers remain
+structured references until the dialect compiler turns those chunks into final
+SQL text and placeholder syntax. `raw_expr()` is the explicit escape hatch for
+trusted SQL that cannot yet be expressed through Mango's typed helpers.
 
 ## Expressions
 
 `Expr[T]` wraps `SQL[T]` and the Python result type for that expression.
-`Field[T]` subclasses `Expr[T]`, so comparisons such as `User.age > 18` return
-`Expr[bool]`. SQL functions follow the same pattern; `count(User.id)` returns
-`Expr[int]` by composing nested chunks.
+`Column[T]` subclasses `Expr[T]`, so comparisons such as `User.age > 18` return
+`Expr[bool]`.
 
-## Query Config
+The expression layer currently covers:
 
-`Select[T]` is an immutable dataclass that stores query config directly:
-projections, conditions, ordering, limit, and offset. Methods such as
-`.where()`, `.order_by()`, `.limit()`, and `.offset()` return a new `Select[T]`,
-preserving the result type through the whole chain.
+- comparison, arithmetic, `IS NULL`, `IS DISTINCT FROM`, `BETWEEN`, `IN`, and
+  pattern matching helpers
+- boolean composition with `and_()`, `or_()`, and `not_()`
+- literals, raw expressions, generic SQL functions, `count()`, `case()`, and
+  `exists()`
+- ordering metadata with direction and `NULLS FIRST` / `NULLS LAST`
+- grouping helpers for `ROLLUP`, `CUBE`, `GROUPING SETS`, and the empty grouping
+  set
 
-There is no hidden query render tree. The compiler accepts `Select[T]` directly.
+All of these helpers return typed `Expr[T]` objects so projected row attributes
+and query conditions preserve their static types.
 
-## Projection Validation
+## Projection Model
 
 Mango projections use `Row` subclasses:
 
 ```python
 class UserResult(Row):
-    name = column(User.name)
-    age = column(User.age)
+    name = expr(User.name)
+    age = expr(User.age)
 
 query = select(UserResult)
 ```
 
-`column(User.name)` returns `RowColumn[str]`, so instance attributes retain the
-source field type without writing `str` or `int` twice. `select(UserResult)`
-derives its projection from the row class and still returns `Select[UserResult]`.
+`expr(User.name)` returns `RowExpr[str]`, so instance attributes retain the
+source expression type without writing `str` or `int` twice. `select(UserResult)`
+validates that the target is a `Row` subclass, derives its projection from
+`__mango_exprs__`, and returns `Select[UserResult]`.
 
-Runtime validation checks that explicit projection aliases exist on the target
-`Row` subclass and that every projected expression carries the expected Python
-type. Dataclass and `TypedDict` result projections are intentionally unsupported
-to keep the public projection model small and statically predictable.
+The selected aliases and expressions come only from the target `Row` subclass.
+Dataclass and `TypedDict` result projections are intentionally unsupported to
+keep the public projection model small and statically predictable.
+
+Hydration is deliberately small: executor rows are dictionaries keyed by selected
+aliases, and `hydrate_row()` constructs the requested `Row` subclass with those
+values.
+
+## Query Config
+
+`Select[T]` is an immutable dataclass that stores query config directly. Methods
+return a new `Select[T]`, preserving the result type through the chain and
+leaving the compiler to consume the config object directly.
+
+The current `Select[T]` model covers the main PostgreSQL `SELECT` surface:
+
+- CTEs with `.with_(...)`, including recursive and materialization options
+- `ALL`, `DISTINCT`, and `DISTINCT ON`
+- explicit `.from_(...)`, `from_table(...)`, `ONLY`, descendants, and
+  `TABLESAMPLE`
+- inner, left, right, full, cross, natural, and lateral joins
+- `WHERE`, `GROUP BY`, `HAVING`, named windows, and set operations
+- `ORDER BY`, `LIMIT`, `OFFSET`, SQL-standard `FETCH`, and row locks
+
+When `.from_(...)` is omitted, the compiler looks at projection, condition,
+ordering, grouping, and having expressions to infer table sources from
+`SQL.used_tables`. Scalar projections with no table references compile without a
+`FROM` clause.
+
+`Select[T]` also exposes async execution helpers:
+
+- `.all()` returns `list[T]`
+- `.first()` returns `T | None`
+- `.one()` returns `T` and requires exactly one row
+
+These helpers use the currently bound executor and then hydrate rows into the
+query's `Row` result type.
 
 ## SQL Compiler and Executor
 
 `PostgresCompiler.compile_select()` consumes `Select[T]` and returns
-`CompiledSql`. It renders `SQL[T]` chunks recursively and centrally handles:
+`CompiledSql`. It renders query configuration and `SQL[T]` chunks recursively
+and centrally handles:
 
 - identifier quoting
-- table and column rendering
+- table, column, table sample, join, grouping, window, fetch, and locking syntax
 - placeholder numbering
 - bound parameter collection
-- nested SQL fragments
+- nested SQL fragments and nested select queries
 
-`PostgresCompiler()` emits `$1` numeric placeholders for inspection. The
-psycopg executor uses `PostgresCompiler(param_style="pyformat")`, which emits
-`%s` placeholders because psycopg3 expects that parameter style.
+`PostgresCompiler()` emits `$1` numeric placeholders for inspection. The psycopg
+executor uses `PostgresCompiler(param_style="pyformat")`, which emits `%s`
+placeholders because psycopg3 expects that parameter style.
 
-`PostgresExecutor` owns psycopg3 execution and maps rows back into dictionaries
-for hydration. The compiler remains independent from psycopg, so query
-construction and SQL generation are inspectable without a live database.
+`PostgresExecutor` owns psycopg3 execution. `connect()` creates an async
+connection, binds the executor in a `ContextVar`, and resets it when the context
+exits. Lower-level callers can also use `bind_executor()` and `reset_executor()`
+directly.
+
+The compiler remains independent from psycopg, so query construction and SQL
+generation are inspectable without a live database.

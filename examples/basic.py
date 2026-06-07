@@ -1,15 +1,16 @@
-from mango import Model, PostgresCompiler, Row, column, connect, field, select
+from mango import Row, Table, expr, select
+from mango.pg import PostgresCompiler, connect, integer, uuid, varchar
 
 
-class User(Model):
-    id = field(int, primary_key=True)
-    name = field(str)
-    age = field(int)
+class User(Table):
+    id = uuid(primary_key=True)
+    name = varchar()
+    age = integer()
 
 
 class UserResult(Row):
-    name = column(User.name)
-    age = column(User.age)
+    name = expr(User.name)
+    age = expr(User.age)
 
 
 query = select(UserResult).where(User.age > 18).order_by(User.name).limit(25)

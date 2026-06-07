@@ -1,15 +1,28 @@
-from mango import Model, PostgresCompiler, Row, and_, column, count, field, select
+from mango import (
+    Table,
+    Row,
+    and_,
+    count,
+    expr,
+    select,
+)
+from mango.pg import PostgresCompiler, integer, uuid, varchar
 
 
-class User(Model):
-    id = field(int, primary_key=True)
-    name = field(str)
-    age = field(int)
+class User(Table):
+    id = uuid(primary_key=True)
+    name = varchar()
+    age = integer()
 
 
 class UserResult(Row):
-    name = column(User.name)
-    age = column(User.age)
+    name = expr(User.name)
+    age = expr(User.age)
+
+
+class UserCountResult(Row):
+    name = expr(User.name)
+    age = expr(count(User.id))
 
 
 def test_compiles_basic_select() -> None:
@@ -36,9 +49,7 @@ def test_limit_and_offset() -> None:
 
 
 def test_compiles_nested_sql_chunks() -> None:
-    query = select(UserResult, name=User.name, age=count(User.id)).where(
-        and_(User.age > 18, User.name != "Ada")
-    )
+    query = select(UserCountResult).where(and_(User.age > 18, User.name != "Ada"))
 
     compiled = PostgresCompiler().compile_select(query)
 
