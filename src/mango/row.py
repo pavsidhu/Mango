@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar, cast, overload
 
 from mango.expressions import Expr
@@ -90,3 +91,7 @@ def row_projection(value: type[Any]) -> dict[str, Expr[Any]]:
     return {
         name: row_expr.expression for name, row_expr in value.__mango_exprs__.items()
     }
+
+
+def hydrate_row[T: Row](result_type: type[T], row: Mapping[str, Any]) -> T:
+    return result_type(**dict(row))

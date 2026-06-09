@@ -23,4 +23,4 @@ print(compiled.params)
 
 async def run(dsn: str) -> list[UserResult]:
     async with connect(dsn):
-        return await query.all()
+        return await query

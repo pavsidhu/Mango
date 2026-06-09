@@ -56,7 +56,7 @@ uv run ruff format --check
 from mango.pg import connect
 
 async with connect("postgresql://localhost/app"):
-    users = await query.all()
+    users = await query
 ```
 
 The compiler is independent from psycopg. `PostgresCompiler()` emits `$1`

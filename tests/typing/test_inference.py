@@ -1,6 +1,6 @@
 from typing import reveal_type
 
-from mango import Table, Row, expr, select
+from mango import Row, Table, expr, select
 from mango.pg import integer, uuid, varchar
 
 
@@ -27,10 +27,6 @@ reveal_type(row_query)
 
 
 async def fetch_users() -> None:
-    users = await row_query.all()
-    first = await row_query.first()
-    one = await row_query.one()
+    users = await row_query
 
     reveal_type(users)
-    reveal_type(first)
-    reveal_type(one)

@@ -109,27 +109,24 @@ leaving the compiler to consume the config object directly.
 
 The current `Select[T]` model covers the main PostgreSQL `SELECT` surface:
 
-- CTEs with `.with_(...)`, including recursive and materialization options
-- `ALL`, `DISTINCT`, and `DISTINCT ON`
-- explicit `.from_(...)`, `from_table(...)`, `ONLY`, descendants, and
-  `TABLESAMPLE`
-- inner, left, right, full, cross, natural, and lateral joins
-- `WHERE`, `GROUP BY`, `HAVING`, named windows, and set operations
-- `ORDER BY`, `LIMIT`, `OFFSET`, SQL-standard `FETCH`, and row locks
+- CTEs with `.with_(...)`
+- `DISTINCT`
+- explicit `.from_(...)`, `from_table(...)`, `ONLY`, and descendants
+- inner, left, right, full, cross, and lateral joins with `ON` conditions
+- `WHERE`, `GROUP BY`, and `HAVING`
+- `ORDER BY`, `LIMIT`, and `OFFSET`
 
 When `.from_(...)` is omitted, the compiler looks at projection, condition,
 ordering, grouping, and having expressions to infer table sources from
 `SQL.used_tables`. Scalar projections with no table references compile without a
 `FROM` clause.
 
-`Select[T]` also exposes async execution helpers:
+`Select[T]` is awaitable. Awaiting a query uses the currently bound executor and
+hydrates the result into `list[T]`:
 
-- `.all()` returns `list[T]`
-- `.first()` returns `T | None`
-- `.one()` returns `T` and requires exactly one row
-
-These helpers use the currently bound executor and then hydrate rows into the
-query's `Row` result type.
+```python
+rows = await query
+```
 
 ## SQL Compiler and Executor
 
@@ -138,7 +135,7 @@ query's `Row` result type.
 and centrally handles:
 
 - identifier quoting
-- table, column, table sample, join, grouping, window, fetch, and locking syntax
+- table, column, join, and grouping syntax
 - placeholder numbering
 - bound parameter collection
 - nested SQL fragments and nested select queries

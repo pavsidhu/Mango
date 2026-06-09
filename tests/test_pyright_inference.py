@@ -30,5 +30,3 @@ def test_pyright_reveals_expected_public_types() -> None:
     assert 'Type of "row_result.name" is "str"' in output
     assert 'Type of "row_query" is "Select[UserRowResult]"' in output
     assert 'Type of "users" is "list[UserRowResult]"' in output
-    assert 'Type of "first" is "UserRowResult | None"' in output
-    assert 'Type of "one" is "UserRowResult"' in output

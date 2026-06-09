@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 
 from mango.compiler import PostgresCompiler
 from mango.query import Select
+from mango.row import Row
 
 _executor: ContextVar[PostgresExecutor | None] = ContextVar(
     "mango_executor",
@@ -26,26 +27,12 @@ class PostgresExecutor:
         default_factory=lambda: PostgresCompiler(param_style="pyformat")
     )
 
-    async def fetch_all[T](self, query: Select[T]) -> list[Mapping[str, Any]]:
+    async def execute[T: Row](self, query: Select[T]) -> list[Mapping[str, Any]]:
         compiled = self.compiler.compile_select(query)
         async with self.connection.cursor(row_factory=dict_row) as cursor:
             await cursor.execute(cast(Any, compiled.sql), compiled.params)
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
-
-    async def fetch_first[T](self, query: Select[T]) -> Mapping[str, Any] | None:
-        limited = query.limit(1) if query.limit_value is None else query
-        compiled = self.compiler.compile_select(limited)
-        async with self.connection.cursor(row_factory=dict_row) as cursor:
-            await cursor.execute(cast(Any, compiled.sql), compiled.params)
-            row = await cursor.fetchone()
-            return None if row is None else dict(row)
-
-    async def fetch_one[T](self, query: Select[T]) -> Mapping[str, Any]:
-        rows = await self.fetch_all(query.limit(2))
-        if len(rows) != 1:
-            raise LookupError(f"Expected exactly one row, got {len(rows)}")
-        return rows[0]
 
 
 def bind_executor(executor: PostgresExecutor) -> Token[PostgresExecutor | None]:

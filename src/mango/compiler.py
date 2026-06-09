@@ -4,16 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from mango.expressions import Expr, GroupingElement, and_
-from mango.query import (
-    FetchClause,
-    Join,
-    LockingClause,
-    Select,
-    TableSource,
-    WindowDefinition,
-    tables_for,
-)
-from mango.row import row_projection
+from mango.query import Join, Select, TableSource, tables_for
+from mango.row import Row, row_projection
 from mango.sql import (
     SQL,
     ColumnChunk,
@@ -29,31 +21,24 @@ type ParamStyle = Literal["numeric", "pyformat"]
 class PostgresCompiler:
     param_style: ParamStyle = "numeric"
 
-    def compile_select[T](self, query: Select[T]) -> CompiledSql:
+    def compile_select[T: Row](self, query: Select[T]) -> CompiledSql:
         params: list[object] = []
         sql = self.compile_select_into(query, params)
         return CompiledSql(sql, tuple(params))
 
-    def compile_select_into[T](self, query: Select[T], params: list[object]) -> str:
+    def compile_select_into[T: Row](
+        self, query: Select[T], params: list[object]
+    ) -> str:
         parts: list[str] = []
 
         if query.with_queries:
-            with_prefix = "WITH RECURSIVE" if query.recursive_with else "WITH"
             with_sql = ", ".join(
                 self.compile_with_query(with_query, params)
                 for with_query in query.with_queries
             )
-            parts.append(f"{with_prefix} {with_sql}")
+            parts.append(f"WITH {with_sql}")
 
         parts.append(self.compile_select_core(query, params))
-
-        for operation in query.set_operations:
-            operation_sql = operation.operator
-            if operation.quantifier is not None:
-                operation_sql += f" {operation.quantifier}"
-            parts.append(
-                f"{operation_sql} {self.compile_select_into(operation.query, params)}"
-            )
 
         if query.ordering:
             order_sql = ", ".join(
@@ -71,30 +56,18 @@ class PostgresCompiler:
             rows = " ROWS" if query.offset_rows else ""
             parts.append(f"OFFSET {offset}{rows}")
 
-        if query.fetch_clause is not None:
-            parts.append(self.compile_fetch(query.fetch_clause, params))
-
-        for locking_clause in query.locking_clauses:
-            parts.append(self.compile_locking(locking_clause))
-
         return " ".join(parts)
 
-    def compile_select_core[T](self, query: Select[T], params: list[object]) -> str:
+    def compile_select_core[T: Row](
+        self, query: Select[T], params: list[object]
+    ) -> str:
         projection = row_projection(query.result_type)
         projections = ", ".join(
             f"{self.compile_sql(expression.sql, params)} AS {quote_ident(alias)}"
             for alias, expression in projection.items()
         )
         select_clause = "SELECT"
-        if query.quantifier == "ALL":
-            select_clause += " ALL"
-        elif query.quantifier == "DISTINCT" and query.distinct_on_exprs:
-            distinct_on = ", ".join(
-                self.compile_sql(expression.sql, params)
-                for expression in query.distinct_on_exprs
-            )
-            select_clause += f" DISTINCT ON ({distinct_on})"
-        elif query.quantifier == "DISTINCT":
+        if query.quantifier == "DISTINCT":
             select_clause += " DISTINCT"
 
         parts = [f"{select_clause} {projections}"]
@@ -122,12 +95,6 @@ class PostgresCompiler:
             parts.append(
                 f"HAVING {self.compile_sql(and_(*query.having_conditions).sql, params)}"
             )
-
-        if query.windows:
-            window_sql = ", ".join(
-                self.compile_window(window, params) for window in query.windows
-            )
-            parts.append(f"WINDOW {window_sql}")
 
         return " ".join(parts)
 
@@ -164,15 +131,12 @@ class PostgresCompiler:
             if with_query.columns
             else ""
         )
-        materialized = ""
-        if with_query.materialized is True:
-            materialized = " MATERIALIZED"
-        elif with_query.materialized is False:
-            materialized = " NOT MATERIALIZED"
         query_sql = self.compile_select_into(with_query.query, params)
-        return f"{quote_ident(with_query.name)}{columns} AS{materialized} ({query_sql})"
+        return f"{quote_ident(with_query.name)}{columns} AS ({query_sql})"
 
-    def compile_from[T](self, query: Select[T], params: list[object]) -> str | None:
+    def compile_from[T: Row](
+        self, query: Select[T], params: list[object]
+    ) -> str | None:
         sources = query.from_items
         if not sources:
             projection = row_projection(query.result_type)
@@ -199,31 +163,18 @@ class PostgresCompiler:
     def compile_table_source(self, source: TableSource, params: list[object]) -> str:
         prefix = "ONLY " if source.only else ""
         suffix = " *" if source.include_descendants else ""
-        sql = f"{prefix}{quote_ident(source.table.name)}{suffix}"
-        if source.sample is not None:
-            arguments = ", ".join(
-                self.compile_sql(argument.sql, params)
-                for argument in source.sample.arguments
-            )
-            sql += f" TABLESAMPLE {source.sample.method} ({arguments})"
-            if source.sample.repeatable is not None:
-                repeatable = self.compile_sql(source.sample.repeatable.sql, params)
-                sql += f" REPEATABLE ({repeatable})"
-        return sql
+        return f"{prefix}{quote_ident(source.table.name)}{suffix}"
 
     def compile_join(self, join: Join, params: list[object]) -> str:
         lateral = "LATERAL " if join.lateral else ""
         target = f"{lateral}{self.compile_table_source(join.target, params)}"
-        if join.natural:
-            return f"NATURAL {join.kind} JOIN {target}"
         if join.kind == "CROSS":
             return f"CROSS JOIN {target}"
 
+        if join.condition is None:
+            raise ValueError(f"{join.kind} JOIN requires an ON condition")
         sql = f"{join.kind} JOIN {target}"
-        if join.condition is not None:
-            return f"{sql} ON {self.compile_sql(join.condition.sql, params)}"
-        using_columns = ", ".join(quote_ident(column) for column in join.using_columns)
-        return f"{sql} USING ({using_columns})"
+        return f"{sql} ON {self.compile_sql(join.condition.sql, params)}"
 
     def compile_grouping(
         self,
@@ -237,52 +188,11 @@ class PostgresCompiler:
         inner = ", ".join(self.compile_grouping(child, params) for child in item.items)
         return f"{item.kind} ({inner})"
 
-    def compile_window(
-        self,
-        window: WindowDefinition,
-        params: list[object],
-    ) -> str:
-        parts: list[str] = []
-        if window.partition_by:
-            partition_sql = ", ".join(
-                self.compile_sql(expression.sql, params)
-                for expression in window.partition_by
-            )
-            parts.append(f"PARTITION BY {partition_sql}")
-        if window.order_by:
-            order_sql = ", ".join(
-                self.compile_ordering(item, params) for item in window.order_by
-            )
-            parts.append(f"ORDER BY {order_sql}")
-        if window.frame is not None:
-            parts.append(window.frame)
-        return f"{quote_ident(window.name)} AS ({' '.join(parts)})"
-
     def compile_ordering(self, expression: Expr[Any], params: list[object]) -> str:
         compiled = self.compile_sql(expression.sql, params)
         if compiled.endswith((" ASC", " DESC")):
             return compiled
         return f"{compiled} ASC"
-
-    def compile_fetch(self, fetch: FetchClause, params: list[object]) -> str:
-        first = "FIRST" if fetch.first else "NEXT"
-        row_word = "ROWS" if fetch.rows else "ROW"
-        count = ""
-        if fetch.count is not None:
-            count = f" {self.compile_sql(fetch.count.sql, params)}"
-        mode = "WITH TIES" if fetch.with_ties else "ONLY"
-        return f"FETCH {first}{count} {row_word} {mode}"
-
-    def compile_locking(self, locking: LockingClause) -> str:
-        sql = f"FOR {locking.strength}"
-        if locking.of:
-            tables = ", ".join(quote_ident(table.name) for table in locking.of)
-            sql += f" OF {tables}"
-        if locking.nowait:
-            sql += " NOWAIT"
-        elif locking.skip_locked:
-            sql += " SKIP LOCKED"
-        return sql
 
     def add_param(self, value: object, params: list[object]) -> str:
         params.append(value)
